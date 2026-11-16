@@ -1,0 +1,92 @@
+name: Deploy Godot to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  # Ustaw na wersję Godota, w której robisz projekt (np. 4.3, 4.4.1, 4.5)
+  GODOT_VERSION: "4.5"
+  # Nazwa presetu z export_presets.cfg (Project > Export)
+  EXPORT_PRESET: "Web"
+  # Katalog z plikiem project.godot względem korzenia repozytorium
+  PROJECT_PATH: "."
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Cache Godot
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}
+
+      - name: Download Godot and export templates
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p ~/godot
+          TEMPLATES_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          mkdir -p "$TEMPLATES_DIR"
+
+          curl -fsSL -o godot.zip "${BASE}/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip -d ~/godot
+          mv ~/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64 ~/godot/godot
+          chmod +x ~/godot/godot
+
+          curl -fsSL -o templates.tpz "${BASE}/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q templates.tpz -d templates_tmp
+          mv templates_tmp/templates/* "$TEMPLATES_DIR/"
+          rm -rf godot.zip templates.tpz templates_tmp
+
+      - name: Import assets
+        working-directory: ${{ env.PROJECT_PATH }}
+        # Pierwszy import potrafi zwrócić błąd mimo poprawnego wyniku, stąd "|| true"
+        run: ~/godot/godot --headless --import || true
+
+      - name: Export Web build
+        working-directory: ${{ env.PROJECT_PATH }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/build/web"
+          ~/godot/godot --headless --export-release "$EXPORT_PRESET" "$GITHUB_WORKSPACE/build/web/index.html"
+          test -f "$GITHUB_WORKSPACE/build/web/index.html"
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
